@@ -13,76 +13,184 @@
   MIT license, all text above must be included in any redistribution
  ****************************************************/
 
-
 #include "SPI.h"
-#include "Adafruit_GFX.h"
-#include "Adafruit_ILI9341.h"
+#include "TFT_eSPI.h"
+#include "TimerEvent.h"
 
-// For the Adafruit shield, these are the default.
-#define TFT_DC 9
-#define TFT_CS 10
-#define TFT_MOSI 24
-#define TFT_MISO 23
-#define TFT_CLK 25
-#define TFT_RST -1
+// For the Feather M4 Express, these are the pins used
+//
+// Make sure to update the User_Setup.h file in the TFT_eSPI library to make changes
+//
+// TFT_DC 9
+// TFT_CS 10
+// TFT_MOSI 24
+// TFT_MISO 23
+// TFT_CLK 25
+// TFT_RST -1
 
-#define VOLUME_PIN 19
-#define VOLUME_MAX_VALUE 1024
+#define ANALOG_PIN_2 16
+#define ANALOG_PIN_3 17
+#define ANALOG_PIN_4 18
+#define ANALOG_PIN_5 19
+#define VOLUME_MAX_VALUE 1023
+
+#define RADIUS 36
+#define PADDING_LEFT 36
+#define PADDING_RIGHT 40
+#define PADDING_TOP 24
+#define PADDING_BOTTOM 24
 
 #define RECT_WIDTH 50
 #define RECT_HEIGHT 200
 
-// My screen uses the breakout board so we can initialize it with all of the SPI pins
-Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_CLK, TFT_RST, TFT_MISO);
+TFT_eSPI tft = TFT_eSPI();
 
-float volumeKnobValue = 0.0;
+enum Direction
+{
+  UP,
+  DOWN
+};
 
-void setup() {
-  tft.begin();
-  tft.fillScreen(ILI9341_BLACK);
+enum VolumeKnobIds
+{
+  NONE,
+  KNOB1,
+  KNOB2,
+  KNOB3,
+  KNOB4
+};
+
+class VolumeKnob
+{
+public:
+  int x;
+  int y;
+  int radius;
+  int color;
+  VolumeKnobIds id;
+  int pin;
+  uint16_t last_angle = 30;
+  float volumeKnobValue;
+  char *displayName;
+
+  int growCounter = 0;
+  TFT_eSprite img = TFT_eSprite(&tft);
+
+  VolumeKnob(int xx, int yy, int r, int c, VolumeKnobIds i, int p, char *dn)
+  {
+    x = xx;
+    y = yy;
+    radius = r;
+    color = c;
+    id = i;
+    pin = p;
+    displayName = dn;
+  }
+
+  int getMeterAngle()
+  {
+    volumeKnobValue = analogRead(pin);
+    float percentageFilled = (volumeKnobValue / (VOLUME_MAX_VALUE));
+    // Range here is 0-100 so value is scaled to an angle 30-330
+    return map(percentageFilled * 100, 0, 100, 30, 330);
+  }
+
+  void draw()
+  {
+    int angle = getMeterAngle();
+
+    float diameter = 2 * radius;
+
+    img.createSprite((diameter) + 6, (diameter) + 6);
+
+    img.fillRect(0, 0, (diameter) + 6, (diameter) + 6, TFT_BLACK);
+    img.fillCircle(radius + 3, radius + 3, radius, TFT_BLACK);
+    img.drawSmoothCircle(radius + 3, radius + 3, radius + 2, TFT_SILVER, TFT_DARKGREY);
+
+    int r = radius - 3;
+
+    // Allocate a value to the arc thickness dependant of r
+    uint8_t thickness = r / 5;
+    if (r < 25)
+      thickness = r / 3;
+
+    img.drawArc(radius + 3, radius + 3, r, r - thickness, 30, angle, color, TFT_BLACK);
+
+    last_angle = angle; // Store meter arc position for next redraw
+
+    img.pushSprite(x, y, TFT_TRANSPARENT);
+
+    tft.drawRect(x + diameter + 6.0, y, 2, diameter + 6.0, TFT_BLACK);
+    tft.drawRect(x, y + diameter + 6.0, diameter + 6.0, 2, TFT_BLACK);
+
+    img.deleteSprite();
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(1);
+    tft.setCursor(x, y + diameter + 10);
+    tft.print(displayName);
+  }
+
+  void update()
+  {
+    int angle = getMeterAngle();
+
+    draw();
+  };
+
+  void init()
+  {
+    volumeKnobValue = analogRead(pin);
+    last_angle = volumeKnobValue;
+    uint16_t tmp = radius - 3;
+  }
+};
+
+float diameter = 2 * RADIUS;
+
+VolumeKnob volumeKnob1 = VolumeKnob(PADDING_LEFT, PADDING_TOP, RADIUS, TFT_DARKCYAN, KNOB1, ANALOG_PIN_5, "Main");
+VolumeKnob volumeKnob2 = VolumeKnob(TFT_HEIGHT - diameter - PADDING_RIGHT, PADDING_TOP, RADIUS, TFT_DARKGREEN, KNOB2, ANALOG_PIN_4, "Firefox");
+VolumeKnob volumeKnob3 = VolumeKnob(PADDING_LEFT, TFT_WIDTH - diameter - PADDING_BOTTOM, RADIUS, TFT_MAROON, KNOB3, ANALOG_PIN_3, "Discord");
+VolumeKnob volumeKnob4 = VolumeKnob(TFT_HEIGHT - diameter - PADDING_RIGHT, TFT_WIDTH - diameter - PADDING_BOTTOM, RADIUS, TFT_PURPLE, KNOB4, ANALOG_PIN_2, "Other");
+
+void sendValues()
+{
+  String builtString = String("");
+  int values[4] = {volumeKnob1.volumeKnobValue, volumeKnob2.volumeKnobValue, volumeKnob3.volumeKnobValue, volumeKnob4.volumeKnobValue};
+
+  for (int i = 0; i < 4; i++)
+  {
+    builtString += String((int)values[i]);
+
+    if (i < 4 - 1)
+    {
+      builtString += String("|");
+    }
+  }
+
+  Serial.println(builtString);
 }
 
-void loop(void) {
-  volumeKnobValue = analogRead(VOLUME_PIN);
+void setup()
+{
+  Serial.begin(9600);
 
-  tft.setCursor(10, 220);
-  tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);  
-  tft.setTextSize(1);
-  tft.drawRect(10, 220, 50, 24, ILI9341_BLACK);
+  tft.begin();
+  tft.fillScreen(TFT_BLACK);
+  tft.setRotation(1);
 
-  // Every character in a string that is printed moves the cursor, so we first print the value, then print some spaces to erase any text longer than the value
-  tft.print(volumeKnobValue);
-  tft.print("    ");
+  volumeKnob1.init();
+  volumeKnob2.init();
+  volumeKnob3.init();
+  volumeKnob4.init();
+}
 
-  tft.drawRect(10, 10, RECT_WIDTH, RECT_HEIGHT, ILI9341_WHITE);
+void loop(void)
+{
+  volumeKnob1.update();
+  volumeKnob2.update();
+  volumeKnob3.update();
+  volumeKnob4.update();
 
-  float blueHeight = ((volumeKnobValue / VOLUME_MAX_VALUE) * (RECT_HEIGHT - 7));
-  float blueY = ((RECT_HEIGHT - 7) - blueHeight);
-
-  float blackHeight = ((RECT_HEIGHT) - blueHeight) - 7;
-  float blackY = 14;
-
-  tft.fillRect(14, blueY + 14, RECT_WIDTH - 7, blueHeight, ILI9341_CYAN);
-  tft.fillRect(14, blackY, RECT_WIDTH - 7, blackHeight, ILI9341_BLACK);
-
-  tft.setCursor(10, 248);
-  tft.print("Height: ");
-  tft.print(blueHeight);
-  tft.print("    ");
-  tft.print(blackHeight);
-  tft.print("    ");
-
-  tft.setCursor(10, 272);
-  tft.print("Y: ");
-  tft.print(blueY);
-  tft.print("    ");
-  tft.print(blackY);
-  tft.print("    ");
-
-  tft.setCursor(10, 296);
-  tft.print("Value: ");
-  tft.print(volumeKnobValue);
-  tft.print("  Max: ");
-  tft.print(VOLUME_MAX_VALUE);
-  tft.print("    ");
+  sendValues();
 }
